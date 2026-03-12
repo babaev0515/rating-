@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>7А · рейтинг</title>
+    <title>7А · рейтинг (защита)</title>
     <!-- Firebase -->
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
@@ -33,7 +33,6 @@
             min-height: 90vh;
         }
 
-        /* текстовая плашка */
         .info {
             text-align: center;
             font-size: 1.1rem;
@@ -45,7 +44,6 @@
             border: 1px solid #d3e0f0;
         }
 
-        /* две карточки */
         .duel {
             display: flex;
             flex-wrap: wrap;
@@ -66,10 +64,17 @@
             align-items: center;
             cursor: pointer;
             transition: background 0.1s;
+            position: relative;
         }
 
         .card:active {
             background: #eaf1f9;
+        }
+
+        .card.disabled {
+            opacity: 0.5;
+            pointer-events: none;
+            cursor: not-allowed;
         }
 
         .name {
@@ -89,7 +94,6 @@
             border: 1px solid #c7d8ee;
         }
 
-        /* топ-5 */
         .top-block {
             background: white;
             border-radius: 24px;
@@ -144,7 +148,6 @@
             color: #2a557d;
         }
 
-        /* подпись внизу */
         .footer {
             margin-top: auto;
             text-align: center;
@@ -179,7 +182,6 @@
             <div class="top-list" id="topList"></div>
         </div>
 
-        <!-- подпись внизу -->
         <div class="footer">
             создал Бабаев Булат · при поддержке проекта Face Mash, созданным Марком Цукербергом
         </div>
@@ -187,7 +189,7 @@
 
     <script>
         (function() {
-            // ===== FIREBASE КОНФИГ (твой) =====
+            // ===== FIREBASE КОНФИГ =====
             const firebaseConfig = {
                 apiKey: "AIzaSyA3bqsYpYd8sUjrHdg1WuIVW3DvWAdALQw",
                 authDomain: "aclass-9997a.firebaseapp.com",
@@ -209,21 +211,38 @@
                 "Тахир", "Шамиль", "Хаким", "Амир"
             ];
 
-            const COLLECTION = 'class7a_final';
+            const COLLECTION = 'class7a_protected';
 
             let students = [];
             let currentPair = { a: null, b: null };
+            
+            // ===== ЗАЩИТА ОТ АВТОКЛИКЕРА =====
+            let lastVoteTime = 0;
+            const MIN_VOTE_INTERVAL = 800; // минимум 800ms между голосами
+            let voteInProgress = false; // блокировка одновременных кликов
+            let lastWinnerName = null; // для защиты от кликов на одного и того же
 
-            // ===== ELO (старт с 0) =====
+            // ===== СБРОС РЕЙТИНГА (выполнится один раз при первом запуске этой версии) =====
+            async function resetAllRatingsToZero() {
+                const snapshot = await db.collection(COLLECTION).get();
+                const batch = db.batch();
+                snapshot.forEach(doc => {
+                    batch.update(doc.ref, { elo: 0 });
+                });
+                await batch.commit();
+                console.log('🔥 Рейтинг сброшен в 0');
+            }
+
+            // ===== ELO =====
             function computeNewElo(winnerElo, loserElo) {
                 const diff = Math.abs(winnerElo - loserElo);
-                let K = 36;
-                if (diff > 200) K = 28;
-                if (diff > 400) K = 20;
+                let K = 32;
+                if (diff > 200) K = 24;
+                if (diff > 400) K = 16;
                 
                 const expectedWinner = 1 / (1 + Math.pow(10, (loserElo - winnerElo) / 400));
                 const change = Math.round(K * (1 - expectedWinner));
-                const finalChange = Math.min(35, Math.max(8, change));
+                const finalChange = Math.min(30, Math.max(5, change)); // лимит 30 за раз
                 
                 return {
                     winnerNew: Math.max(0, winnerElo + finalChange),
@@ -266,7 +285,7 @@
                 students.sort((a, b) => b.elo - a.elo);
             }
 
-            // ===== ФУНКЦИЯ ДЛЯ ЛЁГКОГО ИЗМЕНЕНИЯ СПИСКА (через консоль) =====
+            // ===== ФУНКЦИЯ ДЛЯ ИЗМЕНЕНИЯ СПИСКА =====
             window.updateList = async function(newNamesArray) {
                 if (!Array.isArray(newNamesArray) || newNamesArray.length === 0) {
                     console.error('Нужен массив с именами');
@@ -324,10 +343,34 @@
                 document.getElementById('player1Rating').textContent = a.elo;
                 document.getElementById('player2Name').textContent = b.name;
                 document.getElementById('player2Rating').textContent = b.elo;
+                
+                // убираем disabled
+                document.getElementById('player1Card').classList.remove('disabled');
+                document.getElementById('player2Card').classList.remove('disabled');
             }
 
-            // ===== КЛИК =====
+            // ===== КЛИК С ЗАЩИТОЙ =====
             async function handleVote(clickedName) {
+                const now = Date.now();
+                
+                // 1. Защита от слишком частых кликов
+                if (now - lastVoteTime < MIN_VOTE_INTERVAL) {
+                    console.log('⏱️ Слишком часто, подожди');
+                    return;
+                }
+                
+                // 2. Защита от одновременных кликов
+                if (voteInProgress) {
+                    console.log('🔄 Голосование уже идёт');
+                    return;
+                }
+                
+                // 3. Защита от кликов на одного и того же (если имя совпадает с прошлым победителем)
+                if (clickedName === lastWinnerName) {
+                    console.log('⚠️ Нельзя голосовать за одного и того же два раза подряд');
+                    return;
+                }
+                
                 const { a, b } = currentPair;
                 if (!a || !b) return;
                 
@@ -336,11 +379,21 @@
                 else if (b.name === clickedName) { winner = b; loser = a; }
                 else return;
                 
+                // Блокируем карточки на время обработки
+                voteInProgress = true;
+                lastVoteTime = now;
+                lastWinnerName = winner.name;
+                
+                document.getElementById('player1Card').classList.add('disabled');
+                document.getElementById('player2Card').classList.add('disabled');
+                
                 const { winnerNew, loserNew } = computeNewElo(winner.elo, loser.elo);
                 await updateRatings(winner.name, loser.name, winnerNew, loserNew);
                 
                 renderTop();
-                updateDuel();
+                updateDuel(); // разблокирует карточки
+                
+                voteInProgress = false;
             }
 
             // ===== REALTIME =====
@@ -371,7 +424,7 @@
                         students.sort((a, b) => b.elo - a.elo);
                         renderTop();
                         
-                        if (currentPair.a && currentPair.b) {
+                        if (currentPair.a && currentPair.b && !voteInProgress) {
                             const freshA = students.find(s => s.name === currentPair.a.name);
                             const freshB = students.find(s => s.name === currentPair.b.name);
                             if (freshA && freshB) {
@@ -380,8 +433,6 @@
                             } else {
                                 updateDuel();
                             }
-                        } else {
-                            updateDuel();
                         }
                     }
                 });
@@ -390,6 +441,13 @@
             // ===== СТАРТ =====
             async function init() {
                 await loadFromFirestore();
+                
+                // ПРИНУДИТЕЛЬНЫЙ СБРОС ВСЕХ РЕЙТИНГОВ В 0 (выполнится один раз)
+                await resetAllRatingsToZero();
+                
+                // перезагрузим данные после сброса
+                await loadFromFirestore();
+                
                 renderTop();
                 updateDuel();
                 subscribe();
