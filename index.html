@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>7А · рейтинг</title>
+    <title>7А · рейтинг (анти-накрутка)</title>
     <!-- Firebase -->
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
@@ -64,6 +64,7 @@
             align-items: center;
             cursor: pointer;
             transition: background 0.1s;
+            position: relative;
         }
 
         .card:active {
@@ -73,6 +74,16 @@
         .card.vote-blocked {
             opacity: 0.6;
             pointer-events: none;
+            cursor: not-allowed;
+        }
+
+        .card.cooldown::after {
+            content: "⏳";
+            position: absolute;
+            top: 10px;
+            right: 15px;
+            font-size: 1.2rem;
+            opacity: 0.7;
         }
 
         .name {
@@ -209,27 +220,57 @@
                 "Тахир", "Шамиль", "Хаким", "Амир"
             ];
 
-            const COLLECTION = 'class7a_stable';
+            const COLLECTION = 'class7a_antibot';
 
             let students = [];
             let currentPair = { a: null, b: null };
             
-            // ===== ЗАЩИТА =====
+            // ===== МНОГОУРОВНЕВАЯ ЗАЩИТА ОТ АВТОКЛИКЕРОВ =====
+            
+            // 1. Временные ограничения
             let lastVoteTime = 0;
-            const MIN_VOTE_INTERVAL = 800;
+            const MIN_VOTE_INTERVAL = 1500; // Увеличил до 1.5 секунд между голосами
+            
+            // 2. Блокировка одновременных голосований
             let voteInProgress = false;
+            
+            // 3. Защита от повторов (нельзя голосовать за ту же пару)
             let lastVotePair = { winner: null, loser: null };
+            
+            // 4. Скорость кликов (обнаружение автокликера)
+            let clickTimes = [];
+            const MAX_CLICKS_PER_10_SEC = 8; // максимум 8 кликов за 10 секунд
+            
+            // 5. Кулдаун для каждого ученика (нельзя голосовать за одного слишком часто)
+            const studentCooldowns = new Map(); // имя -> время последнего голоса ЗА этого ученика
+            const STUDENT_COOLDOWN_TIME = 5000; // 5 секунд между голосами за одного ученика
+            
+            // 6. Прогрессивное уменьшение K-factor при подозрительной активности
+            let suspiciousActivity = 0;
+            
+            // 7. Флаг "офлайн-режима" (если интернет пропал)
+            let isOnline = true;
+            let pendingVotes = []; // для будущего использования
 
-            // ===== ELO =====
-            function computeNewElo(winnerElo, loserElo) {
+            // ===== ELO С АДАПТИВНЫМ K =====
+            function computeNewElo(winnerElo, loserElo, winnerName, loserName) {
                 const diff = Math.abs(winnerElo - loserElo);
+                
+                // Базовый K
                 let K = 32;
                 if (diff > 200) K = 24;
                 if (diff > 400) K = 16;
                 
+                // Если была подозрительная активность, уменьшаем K
+                if (suspiciousActivity > 3) {
+                    K = Math.max(8, K / 2);
+                }
+                
                 const expectedWinner = 1 / (1 + Math.pow(10, (loserElo - winnerElo) / 400));
                 const change = Math.round(K * (1 - expectedWinner));
-                const finalChange = Math.min(30, Math.max(5, change));
+                
+                // Сильно ограничиваем максимальное изменение (макс 25)
+                const finalChange = Math.min(25, Math.max(3, change));
                 
                 return {
                     winnerNew: Math.max(0, winnerElo + finalChange),
@@ -237,19 +278,46 @@
                 };
             }
 
+            // ===== ПРОВЕРКА НА АВТОКЛИКЕР =====
+            function isAutoclickerDetected() {
+                const now = Date.now();
+                
+                // Добавляем текущий клик
+                clickTimes.push(now);
+                
+                // Убираем клики старше 10 секунд
+                clickTimes = clickTimes.filter(t => now - t < 10000);
+                
+                // Если больше MAX_CLICKS_PER_10_SEC кликов за 10 секунд
+                if (clickTimes.length > MAX_CLICKS_PER_10_SEC) {
+                    suspiciousActivity++;
+                    console.warn(`⚠️ Подозрительная активность! Уровень: ${suspiciousActivity}`);
+                    return true;
+                }
+                
+                return false;
+            }
+
+            // ===== ПРОВЕРКА КУЛДАУНА УЧЕНИКА =====
+            function isStudentOnCooldown(studentName) {
+                const lastVote = studentCooldowns.get(studentName);
+                if (!lastVote) return false;
+                
+                const now = Date.now();
+                return (now - lastVote) < STUDENT_COOLDOWN_TIME;
+            }
+
             // ===== FIRESTORE =====
             async function loadFromFirestore() {
                 const snapshot = await db.collection(COLLECTION).get();
                 
                 if (snapshot.empty) {
-                    // Создаём документы только если их нет
                     const batch = db.batch();
                     DEFAULT_NAMES.forEach(name => {
                         const ref = db.collection(COLLECTION).doc(name);
                         batch.set(ref, { name, elo: 0 });
                     });
                     await batch.commit();
-                    console.log('📚 Создана новая коллекция с рейтингом 0');
                     return loadFromFirestore();
                 } else {
                     const loaded = [];
@@ -258,7 +326,6 @@
                     });
                     loaded.sort((a, b) => b.elo - a.elo);
                     students = loaded;
-                    console.log('✅ Загружены данные из Firebase', students.length);
                     return loaded;
                 }
             }
@@ -269,7 +336,6 @@
                 batch.update(db.collection(COLLECTION).doc(loserName), { elo: loserNew });
                 await batch.commit();
                 
-                // Обновляем кэш
                 const wIdx = students.findIndex(s => s.name === winnerName);
                 const lIdx = students.findIndex(s => s.name === loserName);
                 if (wIdx !== -1) students[wIdx].elo = winnerNew;
@@ -288,12 +354,10 @@
                 const snapshot = await db.collection(COLLECTION).get();
                 const batch = db.batch();
                 
-                // Удаляем все старые документы
                 snapshot.forEach(doc => {
                     batch.delete(doc.ref);
                 });
                 
-                // Создаём новые с рейтингом 0
                 newNamesArray.forEach(name => {
                     const trimmed = name.trim();
                     if (trimmed) {
@@ -325,10 +389,7 @@
             }
 
             function updateDuel() {
-                if (students.length < 2) {
-                    console.warn('Недостаточно учеников для дуэли');
-                    return;
-                }
+                if (students.length < 2) return;
                 
                 let idx1 = Math.floor(Math.random() * students.length);
                 let idx2;
@@ -345,24 +406,34 @@
                 document.getElementById('player2Name').textContent = b.name;
                 document.getElementById('player2Rating').textContent = b.elo;
                 
-                // Разблокируем карточки
-                document.getElementById('player1Card').classList.remove('vote-blocked');
-                document.getElementById('player2Card').classList.remove('vote-blocked');
+                document.getElementById('player1Card').classList.remove('vote-blocked', 'cooldown');
+                document.getElementById('player2Card').classList.remove('vote-blocked', 'cooldown');
             }
 
-            // ===== КЛИК С ЗАЩИТОЙ =====
+            // ===== КЛИК С МАКСИМАЛЬНОЙ ЗАЩИТОЙ =====
             async function handleVote(clickedName) {
                 const now = Date.now();
                 
-                // Защита от слишком частых кликов
-                if (now - lastVoteTime < MIN_VOTE_INTERVAL) {
-                    console.log('⏱️ Слишком часто, подожди');
+                // 1. Проверка онлайн-статуса
+                if (!navigator.onLine) {
+                    alert('Нет подключения к интернету. Голосование недоступно.');
                     return;
                 }
                 
-                // Защита от одновременных кликов
+                // 2. Проверка на автокликер (частота кликов)
+                if (isAutoclickerDetected()) {
+                    alert('Обнаружена подозрительная активность. Пожалуйста, голосуйте медленнее.');
+                    return;
+                }
+                
+                // 3. Базовый временной интервал
+                if (now - lastVoteTime < MIN_VOTE_INTERVAL) {
+                    alert(`Слишком часто! Подождите ${Math.ceil((MIN_VOTE_INTERVAL - (now - lastVoteTime))/1000)} сек.`);
+                    return;
+                }
+                
+                // 4. Блокировка одновременных голосов
                 if (voteInProgress) {
-                    console.log('🔄 Голосование уже идёт');
                     return;
                 }
                 
@@ -374,32 +445,37 @@
                 else if (b.name === clickedName) { winner = b; loser = a; }
                 else return;
                 
-                // Защита от повторного голосования за ту же пару
-                if (lastVotePair.winner === winner.name && lastVotePair.loser === loser.name) {
-                    console.log('⚠️ Нельзя голосовать за ту же пару подряд');
+                // 5. Проверка кулдауна ученика (нельзя спамить одним учеником)
+                if (isStudentOnCooldown(winner.name)) {
+                    alert(`За ученика ${winner.name} можно голосовать раз в 5 секунд`);
                     return;
                 }
                 
-                // Блокируем карточки
+                // 6. Защита от повтора той же пары
+                if (lastVotePair.winner === winner.name && lastVotePair.loser === loser.name) {
+                    alert('Нельзя голосовать за ту же пару два раза подряд');
+                    return;
+                }
+                
+                // Блокируем интерфейс
                 voteInProgress = true;
                 lastVoteTime = now;
                 lastVotePair = { winner: winner.name, loser: loser.name };
+                
+                // Устанавливаем кулдаун для победителя
+                studentCooldowns.set(winner.name, now);
                 
                 document.getElementById('player1Card').classList.add('vote-blocked');
                 document.getElementById('player2Card').classList.add('vote-blocked');
                 
                 try {
-                    const { winnerNew, loserNew } = computeNewElo(winner.elo, loser.elo);
+                    const { winnerNew, loserNew } = computeNewElo(winner.elo, loser.elo, winner.name, loser.name);
                     await updateRatings(winner.name, loser.name, winnerNew, loserNew);
                     
-                    // Обновим отображение
                     renderTop();
-                    
-                    // Новая дуэль
                     updateDuel();
                 } catch (error) {
-                    console.error('Ошибка при голосовании:', error);
-                    // Разблокируем в случае ошибки
+                    console.error('Ошибка:', error);
                     document.getElementById('player1Card').classList.remove('vote-blocked');
                     document.getElementById('player2Card').classList.remove('vote-blocked');
                 } finally {
@@ -418,18 +494,15 @@
                             const idx = students.findIndex(s => s.name === updated.name);
                             
                             if (idx !== -1) {
-                                // Обновляем существующего
                                 if (students[idx].elo !== updated.elo) {
                                     students[idx].elo = updated.elo;
                                     changed = true;
                                 }
                             } else {
-                                // Добавляем нового
                                 students.push(updated);
                                 changed = true;
                             }
                         } else if (change.type === 'removed') {
-                            // Удаляем ученика
                             const removedName = change.doc.data().name;
                             students = students.filter(s => s.name !== removedName);
                             changed = true;
@@ -440,50 +513,48 @@
                         students.sort((a, b) => b.elo - a.elo);
                         renderTop();
                         
-                        // Обновляем текущие карточки, если они не заблокированы
                         if (!voteInProgress && currentPair.a && currentPair.b) {
                             const freshA = students.find(s => s.name === currentPair.a.name);
                             const freshB = students.find(s => s.name === currentPair.b.name);
                             
                             if (freshA && freshB) {
-                                // Обновляем рейтинги в карточках
                                 document.getElementById('player1Rating').textContent = freshA.elo;
                                 document.getElementById('player2Rating').textContent = freshB.elo;
-                                
-                                // Обновляем currentPair с актуальными объектами
                                 currentPair.a = freshA;
                                 currentPair.b = freshB;
                             } else {
-                                // Если кого-то нет в списке, берём новую пару
                                 updateDuel();
                             }
                         }
                     }
-                }, (error) => {
-                    console.error('Ошибка Firestore:', error);
                 });
             }
 
+            // ===== ОТСЛЕЖИВАНИЕ ОНЛАЙН СТАТУСА =====
+            window.addEventListener('online', () => {
+                isOnline = true;
+                console.log('✅ Интернет подключен');
+            });
+            
+            window.addEventListener('offline', () => {
+                isOnline = false;
+                alert('❌ Пропало подключение к интернету. Голосование недоступно.');
+            });
+
             // ===== СТАРТ =====
             async function init() {
-                try {
-                    await loadFromFirestore();
-                    renderTop();
-                    updateDuel();
-                    subscribe();
-                    
-                    document.getElementById('player1Card').addEventListener('click', () => {
-                        handleVote(document.getElementById('player1Name').textContent);
-                    });
-                    
-                    document.getElementById('player2Card').addEventListener('click', () => {
-                        handleVote(document.getElementById('player2Name').textContent);
-                    });
-                    
-                    console.log('🚀 Приложение запущено');
-                } catch (error) {
-                    console.error('Ошибка инициализации:', error);
-                }
+                await loadFromFirestore();
+                renderTop();
+                updateDuel();
+                subscribe();
+                
+                document.getElementById('player1Card').addEventListener('click', () => {
+                    handleVote(document.getElementById('player1Name').textContent);
+                });
+                
+                document.getElementById('player2Card').addEventListener('click', () => {
+                    handleVote(document.getElementById('player2Name').textContent);
+                });
             }
 
             init();
