@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>7А · рейтинг</title>
+    <!-- Firebase -->
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+    <style>
+        /* Абсолютный минимум — ничего лишнего */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #f0f4f9;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            padding: 24px 16px;
+            color: #1f2e3d;
+        }
+
+        .app {
+            max-width: 800px;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            min-height: 90vh;
+        }
+
+        /* текстовая плашка */
+        .info {
+            text-align: center;
+            font-size: 1.1rem;
+            color: #3f5b77;
+            background: white;
+            padding: 14px 28px;
+            border-radius: 40px;
+            margin-bottom: 32px;
+            border: 1px solid #d3e0f0;
+        }
+
+        /* две карточки */
+        .duel {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 16px;
+            margin-bottom: 48px;
+        }
+
+        .card {
+            background: white;
+            flex: 1 1 240px;
+            max-width: 300px;
+            padding: 32px 16px 36px;
+            border-radius: 24px;
+            border: 1px solid #d0deef;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            cursor: pointer;
+            transition: background 0.1s;
+        }
+
+        .card:active {
+            background: #eaf1f9;
+        }
+
+        .name {
+            font-size: 2.8rem;
+            font-weight: 550;
+            text-align: center;
+            margin-bottom: 16px;
+            color: #1f3b58;
+        }
+
+        .rating {
+            font-size: 1.5rem;
+            background: #eef4fb;
+            padding: 6px 24px;
+            border-radius: 40px;
+            color: #2a5379;
+            border: 1px solid #c7d8ee;
+        }
+
+        /* топ-5 */
+        .top-block {
+            background: white;
+            border-radius: 24px;
+            padding: 20px 24px;
+            border: 1px solid #d3e0f0;
+            margin-bottom: 30px;
+        }
+
+        .top-title {
+            font-size: 1.1rem;
+            font-weight: 500;
+            color: #3f6385;
+            margin-bottom: 18px;
+        }
+
+        .top-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .row {
+            display: flex;
+            align-items: center;
+            background: #f7fafd;
+            padding: 10px 18px;
+            border-radius: 40px;
+            border: 1px solid #d5e3f2;
+        }
+
+        .rank {
+            background: #e5eefa;
+            border-radius: 30px;
+            padding: 4px 12px;
+            font-weight: 500;
+            color: #2e5b86;
+            min-width: 44px;
+            text-align: center;
+            margin-right: 12px;
+        }
+
+        .student-name {
+            flex: 1;
+            font-weight: 500;
+            color: #1f405e;
+        }
+
+        .student-rating {
+            background: #e9f2fc;
+            padding: 4px 16px;
+            border-radius: 30px;
+            color: #2a557d;
+        }
+
+        /* подпись внизу */
+        .footer {
+            margin-top: auto;
+            text-align: center;
+            padding: 20px 0 10px;
+            font-size: 0.85rem;
+            color: #6f8aa8;
+            border-top: 1px solid #d8e4f2;
+            background: rgba(255, 255, 255, 0.5);
+            border-radius: 30px 30px 0 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <div class="info">
+            Это всё не в обиду, просто выбирайте кого считаете лучше
+        </div>
+
+        <div class="duel" id="duelContainer">
+            <div class="card" id="player1Card">
+                <div class="name" id="player1Name">—</div>
+                <div class="rating" id="player1Rating">0</div>
+            </div>
+            <div class="card" id="player2Card">
+                <div class="name" id="player2Name">—</div>
+                <div class="rating" id="player2Rating">0</div>
+            </div>
+        </div>
+
+        <div class="top-block">
+            <div class="top-title">Топ 5 учеников</div>
+            <div class="top-list" id="topList"></div>
+        </div>
+
+        <!-- подпись внизу -->
+        <div class="footer">
+            создал Бабаев Булат · при поддержке проекта Face Mash, созданным Марком Цукербергом
+        </div>
+    </div>
+
+    <script>
+        (function() {
+            // ===== FIREBASE КОНФИГ (твой) =====
+            const firebaseConfig = {
+                apiKey: "AIzaSyA3bqsYpYd8sUjrHdg1WuIVW3DvWAdALQw",
+                authDomain: "aclass-9997a.firebaseapp.com",
+                projectId: "aclass-9997a",
+                storageBucket: "aclass-9997a.firebasestorage.app",
+                messagingSenderId: "1002595515826",
+                appId: "1:1002595515826:web:240d24b764c82e2a0ab8ab",
+                measurementId: "G-1DF5BH4ZY1"
+            };
+
+            const app = firebase.initializeApp(firebaseConfig);
+            const db = firebase.firestore();
+
+            // ===== СПИСОК УЧЕНИКОВ =====
+            const DEFAULT_NAMES = [
+                "Гаяз", "Адиль", "Булат Х.", "Булат Б.", "Мурат", "Вахит", "Ислам",
+                "Айнур", "Айдар", "Самат", "Данир", "Ильгиз", "Алексей", "Зиннат",
+                "Зиннур", "Камиль", "Саид", "Самир", "Данил Жуйков", "Данил Жилкин",
+                "Тахир", "Шамиль", "Хаким", "Амир"
+            ];
+
+            const COLLECTION = 'class7a_final';
+
+            let students = [];
+            let currentPair = { a: null, b: null };
+
+            // ===== ELO (старт с 0) =====
+            function computeNewElo(winnerElo, loserElo) {
+                const diff = Math.abs(winnerElo - loserElo);
+                let K = 36;
+                if (diff > 200) K = 28;
+                if (diff > 400) K = 20;
+                
+                const expectedWinner = 1 / (1 + Math.pow(10, (loserElo - winnerElo) / 400));
+                const change = Math.round(K * (1 - expectedWinner));
+                const finalChange = Math.min(35, Math.max(8, change));
+                
+                return {
+                    winnerNew: Math.max(0, winnerElo + finalChange),
+                    loserNew: Math.max(0, loserElo - finalChange)
+                };
+            }
+
+            // ===== FIRESTORE =====
+            async function loadFromFirestore() {
+                const snapshot = await db.collection(COLLECTION).get();
+                
+                if (snapshot.empty) {
+                    const batch = db.batch();
+                    DEFAULT_NAMES.forEach(name => {
+                        const ref = db.collection(COLLECTION).doc(name);
+                        batch.set(ref, { name, elo: 0 });
+                    });
+                    await batch.commit();
+                    return loadFromFirestore();
+                } else {
+                    const loaded = [];
+                    snapshot.forEach(doc => loaded.push(doc.data()));
+                    loaded.sort((a, b) => b.elo - a.elo);
+                    students = loaded;
+                    return loaded;
+                }
+            }
+
+            async function updateRatings(winnerName, loserName, winnerNew, loserNew) {
+                const batch = db.batch();
+                batch.update(db.collection(COLLECTION).doc(winnerName), { elo: winnerNew });
+                batch.update(db.collection(COLLECTION).doc(loserName), { elo: loserNew });
+                await batch.commit();
+                
+                const wIdx = students.findIndex(s => s.name === winnerName);
+                const lIdx = students.findIndex(s => s.name === loserName);
+                if (wIdx !== -1) students[wIdx].elo = winnerNew;
+                if (lIdx !== -1) students[lIdx].elo = loserNew;
+                
+                students.sort((a, b) => b.elo - a.elo);
+            }
+
+            // ===== ФУНКЦИЯ ДЛЯ ЛЁГКОГО ИЗМЕНЕНИЯ СПИСКА (через консоль) =====
+            window.updateList = async function(newNamesArray) {
+                if (!Array.isArray(newNamesArray) || newNamesArray.length === 0) {
+                    console.error('Нужен массив с именами');
+                    return;
+                }
+                
+                const snapshot = await db.collection(COLLECTION).get();
+                const batch = db.batch();
+                
+                snapshot.forEach(doc => {
+                    batch.delete(doc.ref);
+                });
+                
+                newNamesArray.forEach(name => {
+                    const ref = db.collection(COLLECTION).doc(name.trim());
+                    batch.set(ref, { name: name.trim(), elo: 0 });
+                });
+                
+                await batch.commit();
+                console.log('✅ Список обновлён:', newNamesArray);
+            };
+
+            // ===== UI =====
+            function renderTop() {
+                const container = document.getElementById('topList');
+                const top5 = students.slice(0, 5);
+                container.innerHTML = '';
+                
+                top5.forEach((s, i) => {
+                    const row = document.createElement('div');
+                    row.className = 'row';
+                    row.innerHTML = `
+                        <span class="rank">${i+1}</span>
+                        <span class="student-name">${s.name}</span>
+                        <span class="student-rating">${s.elo}</span>
+                    `;
+                    container.appendChild(row);
+                });
+            }
+
+            function updateDuel() {
+                if (students.length < 2) return;
+                
+                let idx1 = Math.floor(Math.random() * students.length);
+                let idx2;
+                do {
+                    idx2 = Math.floor(Math.random() * students.length);
+                } while (idx2 === idx1);
+                
+                const a = students[idx1];
+                const b = students[idx2];
+                currentPair = { a, b };
+                
+                document.getElementById('player1Name').textContent = a.name;
+                document.getElementById('player1Rating').textContent = a.elo;
+                document.getElementById('player2Name').textContent = b.name;
+                document.getElementById('player2Rating').textContent = b.elo;
+            }
+
+            // ===== КЛИК =====
+            async function handleVote(clickedName) {
+                const { a, b } = currentPair;
+                if (!a || !b) return;
+                
+                let winner, loser;
+                if (a.name === clickedName) { winner = a; loser = b; }
+                else if (b.name === clickedName) { winner = b; loser = a; }
+                else return;
+                
+                const { winnerNew, loserNew } = computeNewElo(winner.elo, loser.elo);
+                await updateRatings(winner.name, loser.name, winnerNew, loserNew);
+                
+                renderTop();
+                updateDuel();
+            }
+
+            // ===== REALTIME =====
+            function subscribe() {
+                db.collection(COLLECTION).onSnapshot(snapshot => {
+                    let changed = false;
+                    snapshot.docChanges().forEach(change => {
+                        if (change.type === 'modified' || change.type === 'added') {
+                            const updated = change.doc.data();
+                            const idx = students.findIndex(s => s.name === updated.name);
+                            if (idx !== -1) {
+                                if (students[idx].elo !== updated.elo) {
+                                    students[idx].elo = updated.elo;
+                                    changed = true;
+                                }
+                            } else {
+                                students.push(updated);
+                                changed = true;
+                            }
+                        } else if (change.type === 'removed') {
+                            const removedName = change.doc.data().name;
+                            students = students.filter(s => s.name !== removedName);
+                            changed = true;
+                        }
+                    });
+                    
+                    if (changed) {
+                        students.sort((a, b) => b.elo - a.elo);
+                        renderTop();
+                        
+                        if (currentPair.a && currentPair.b) {
+                            const freshA = students.find(s => s.name === currentPair.a.name);
+                            const freshB = students.find(s => s.name === currentPair.b.name);
+                            if (freshA && freshB) {
+                                document.getElementById('player1Rating').textContent = freshA.elo;
+                                document.getElementById('player2Rating').textContent = freshB.elo;
+                            } else {
+                                updateDuel();
+                            }
+                        } else {
+                            updateDuel();
+                        }
+                    }
+                });
+            }
+
+            // ===== СТАРТ =====
+            async function init() {
+                await loadFromFirestore();
+                renderTop();
+                updateDuel();
+                subscribe();
+                
+                document.getElementById('player1Card').addEventListener('click', () => {
+                    handleVote(document.getElementById('player1Name').textContent);
+                });
+                document.getElementById('player2Card').addEventListener('click', () => {
+                    handleVote(document.getElementById('player2Name').textContent);
+                });
+            }
+
+            init();
+        })();
+    </script>
+</body>
+</html>
